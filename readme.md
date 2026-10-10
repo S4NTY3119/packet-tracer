@@ -22,3 +22,6 @@ Now enter the victim's ip that you js copied. It'll start to spoof arp packets.
 Here comes the monitor script, run sniffer.py it'll ask for the target ip, Press enter to scan every ip, or enter the victim's ip to concentrate on his device.
 Now it'll show the domains the victim visits. Therefore, you can spy on what he's doing.
 (irrelevant sites will get hid)
+
+
+DON'T MIND THE .ino FILE, I'M TRYNA DO ANOTHER PROJECT ASIDE
