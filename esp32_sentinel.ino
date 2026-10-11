@@ -13,6 +13,9 @@ ip4_addr_t target_gateway_ip;
 uint8_t real_gateway_mac[6];
 bool attack_detected = false;
 
+// Get the BSSID (AP MAC) of the currently connected network
+uint8_t ap_bssid[6];
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -68,6 +71,73 @@ void parseConfig(String input) {
   }
 }
 
+// ── Deauth countermeasure ──────────────────────────────────────────
+// Sends 802.11 deauthentication frames to kick attacker off the WiFi.
+// Frame is addressed FROM the AP (BSSID) TO the attacker MAC, with
+// reason code 1 (unspecified). The AP's real BSSID is obtained from
+// the current WiFi connection.
+void deauth_device(uint8_t *target_mac) {
+  // Resolve the AP BSSID we're connected to
+  wifi_ap_record_t ap_info;
+  if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+    Serial.println("[!] Could not get AP info for deauth.");
+    return;
+  }
+  memcpy(ap_bssid, ap_info.bssid, 6);
+
+  // Enable promiscuous mode for raw TX
+  esp_wifi_set_promiscuous(true);
+
+  // 802.11 deauth frame (26 bytes)
+  // Type/Subtype: Deauthentication (0xC0 0x00)
+  uint8_t deauth_frame[26] = {
+    0xC0, 0x00,                         // Frame Control: Deauth
+    0x00, 0x00,                         // Duration
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Addr1: Destination (target)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Addr2: Source (AP BSSID)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Addr3: BSSID (AP)
+    0x00, 0x00,                         // Sequence number (auto-filled)
+    0x01, 0x00                          // Reason code 1: Unspecified
+  };
+
+  // Fill in MAC addresses
+  memcpy(&deauth_frame[4],  target_mac, 6);  // Addr1 = target
+  memcpy(&deauth_frame[10], ap_bssid,   6);  // Addr2 = AP
+  memcpy(&deauth_frame[16], ap_bssid,   6);  // Addr3 = AP (BSSID)
+
+  // Get the current WiFi channel
+  uint8_t primary_channel;
+  wifi_second_chan_t second;
+  esp_wifi_get_channel(&primary_channel, &second);
+
+  Serial.print("Sending deauth frames on channel ");
+  Serial.println(primary_channel);
+
+  // Send a burst of deauth frames to reliably disconnect the attacker
+  int sent = 1;
+  for (int i = 0; i < 50; i++) {
+    esp_err_t result = esp_wifi_80211_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
+    if (result == ESP_OK) {
+      sent++;
+    }
+    delay(10);
+  }
+
+  // Also send deauth as broadcast to cover all associated clients of attacker
+  uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  memcpy(&deauth_frame[4], broadcast_mac, 6);
+  for (int i = 0; i < 20; i++) {
+    esp_wifi_80211_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
+    delay(10);
+  }
+
+  esp_wifi_set_promiscuous(false);
+
+  Serial.print("Deauth complete. Sent ");
+  Serial.print(sent);
+  Serial.println(" targeted + 20 broadcast deauth frames.");
+}
+
 void sendAlert(uint8_t *hacker_mac) {
   Serial.println("------------------------------------------------------------------------------------------");
   Serial.println("MITM attack detected.");
@@ -79,14 +149,26 @@ void sendAlert(uint8_t *hacker_mac) {
   }
   Serial.println();
   Serial.println("INITIATING COUNTERMEASURES..");
+  
+  // Fast blink to indicate detection (20 times, 50ms on/off)
   for(int i=0; i<20; i++) {
     digitalWrite(2, HIGH);
     delay(50);
     digitalWrite(2, LOW);
     delay(50);
   }
-  Serial.println("Jamming mac.");
-  Serial.println("Device has been successfully jammed.");
+
+  // ── DEAUTH: disconnect the attacker from WiFi ──
+  deauth_device(hacker_mac);
+
+  // Slow blink to indicate countermeasure complete (4 times, 500ms on/off)
+  for(int i=0; i<4; i++) {
+    digitalWrite(2, HIGH);
+    delay(500);
+    digitalWrite(2, LOW);
+    delay(500);
+  }
+
   Serial.println("covered metres: 31");
   Serial.println("------------------------------------------------------------------------------------------");
 }
